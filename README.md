@@ -1,5 +1,5 @@
 # HelloFlink
-Project of HelloFlink for BytesDance
+Project of HelloFlink for ByteDance
 
 1.整体架构介绍：
 Flink的开发我们都按照标准的“Source -> Transformation -> Sink”的有向无环图DAG格式进行设计和开发。其中Source用了多种形式进行实现，比如说预定义的
