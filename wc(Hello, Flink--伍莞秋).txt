@@ -1,0 +1,205 @@
+package com.bytedance.kswc;
+
+import org.apache.flink.api.common.ExecutionConfig;
+import org.apache.flink.api.common.RuntimeExecutionMode;
+import org.apache.flink.api.common.functions.FlatMapFunction;
+import org.apache.flink.api.common.serialization.SimpleStringEncoder;
+import org.apache.flink.api.common.serialization.SimpleStringSchema;
+import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.api.java.utils.MultipleParameterTool;
+import org.apache.flink.configuration.ExecutionOptions;
+import org.apache.flink.configuration.MemorySize;
+import org.apache.flink.connector.file.sink.FileSink;
+import org.apache.flink.core.fs.Path;
+import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.datastream.DataStreamSource;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.DefaultRollingPolicy;
+import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer;
+import org.apache.flink.util.Collector;
+import org.apache.flink.util.TimeUtils;
+
+import java.time.Duration;
+import java.util.*;
+
+public class SourceKafkaWordCount {
+    public static void main(String[] args) throws Exception {
+
+        final CLI params = CLI.fromArgs(args);
+
+//         org.apache.flink.streaming.api.environment.StreamExecutionEnvironment
+        StreamExecutionEnvironment env =
+                StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+
+//         java.util.Properties
+        Properties properties = new Properties();
+        properties.setProperty("bootstrap.servers", "hadoop100:9092");
+        properties.setProperty("group.id", "consumer-group");
+        properties.setProperty("key.deserializer",
+                "org.apache.kafka.common.serialization.StringDeserializer");
+        properties.setProperty("value.deserializer",
+                "org.apache.kafka.common.serialization.StringDeserializer");
+        properties.setProperty("auto.offset.reset", "latest");
+
+//        org.apache.flink.streaming.api.datastream.DataStreamSource;
+//        org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+//        org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer;
+        DataStreamSource<String> stream = env.addSource(
+                new FlinkKafkaConsumer<String>(
+                "WordCount",
+                new SimpleStringSchema(),
+                properties)
+        );
+        stream.print("Kafka");
+
+//        org.apache.flink.api.common.serialization.SimpleStringSchema;
+//        org.apache.flink.api.java.tuple.Tuple2;
+//        org.apache.flink.streaming.api.datastream.DataStream;
+        DataStream<Tuple2<String, Integer>> counts = stream
+                .flatMap(new Tokenizer())
+                .name("tokenizer")
+                .keyBy(value -> value.f0)
+                .sum(1)
+                .name("counter");
+
+
+//        org.apache.flink.api.common.serialization.SimpleStringEncoder;
+//        org.apache.flink.configuration.MemorySize;
+//        org.apache.flink.connector.file.sink.FileSink;
+//        org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.DefaultRollingPolicy;
+        counts.sinkTo(
+                        FileSink.<Tuple2<String, Integer>>forRowFormat(
+                                        params.getOutput().get(), new SimpleStringEncoder<>())
+                                .withRollingPolicy(
+                                        DefaultRollingPolicy.builder()
+                                                .withMaxPartSize(MemorySize.ofMebiBytes(1))
+                                                .withRolloverInterval(Duration.ofSeconds(10))
+                                                .build())
+                                .build())
+                .name("file-sink");
+
+        env.execute();
+    }
+
+    public static final class Tokenizer
+            implements FlatMapFunction<String, Tuple2<String, Integer>> {
+
+        @Override
+        public void flatMap(String value, Collector<Tuple2<String, Integer>> out) {
+            // normalize and split the line
+            String[] tokens = value.toLowerCase().split("\\W+");
+
+            // emit the pairs
+            for (String token : tokens) {
+                if (token.length() > 0) {
+                    out.collect(new Tuple2<>(token, 1));
+                }
+            }
+        }
+    }
+
+//   org.apache.flink.api.common.ExecutionConfig;
+    static class CLI extends ExecutionConfig.GlobalJobParameters {
+
+        public static final String OUTPUT_KEY = "output";
+        public static final String DISCOVERY_INTERVAL = "discovery-interval";
+        public static final String EXECUTION_MODE = "execution-mode";
+
+        public static CLI fromArgs(String[] args) throws Exception {
+
+//          org.apache.flink.api.java.utils.MultipleParameterTool;
+            MultipleParameterTool params = MultipleParameterTool.fromArgs(args);
+
+//          org.apache.flink.core.fs.Path;
+            Path output = null;
+            if (params.has(OUTPUT_KEY)) {
+                output = new Path(params.get(OUTPUT_KEY));
+            } else {
+                System.out.println("Printing result to stdout. Use --output to specify output path.");
+            }
+
+//           org.apache.flink.util.TimeUtils;
+//           java.time.Duration;
+            Duration watchInterval = null;
+            if (params.has(DISCOVERY_INTERVAL)) {
+                watchInterval = TimeUtils.parseDuration(params.get(DISCOVERY_INTERVAL));
+            }
+
+//            org.apache.flink.api.common.RuntimeExecutionMode;
+//            org.apache.flink.configuration.ExecutionOptions;
+            RuntimeExecutionMode executionMode = ExecutionOptions.RUNTIME_MODE.defaultValue();
+            if (params.has(EXECUTION_MODE)) {
+                executionMode = RuntimeExecutionMode.valueOf(params.get(EXECUTION_MODE).toUpperCase());
+            }
+
+            return new CLI(output, watchInterval, executionMode, params);
+        }
+
+        private final Path output;
+        private final Duration discoveryInterval;
+        private final RuntimeExecutionMode executionMode;
+        private final MultipleParameterTool params;
+
+        // Constructor
+        private CLI(
+                Path output,
+                Duration discoveryInterval,
+                RuntimeExecutionMode executionMode,
+                MultipleParameterTool params) {
+            this.output = output;
+            this.discoveryInterval = discoveryInterval;
+            this.executionMode = executionMode;
+            this.params = params;
+        }
+// java.util.Optional;
+// java.util.OptionalInt;
+        public Optional<Duration> getDiscoveryInterval() {
+            return Optional.ofNullable(discoveryInterval);
+        }
+
+        public Optional<Path> getOutput() {
+            return Optional.ofNullable(output);
+        }
+
+        public RuntimeExecutionMode getExecutionMode() {
+            return executionMode;
+        }
+
+        public OptionalInt getInt(String key) {
+            if (params.has(key)) {
+                return OptionalInt.of(params.getInt(key));
+            }
+
+            return OptionalInt.empty();
+        }
+
+        @Override
+        public Map<String, String> toMap() {
+            return params.toMap();
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) {
+                return true;
+            }
+            if (o == null || getClass() != o.getClass()) {
+                return false;
+            }
+            if (!super.equals(o)) {
+                return false;
+            }
+            CLI cli = (CLI) o;
+            return Objects.equals(output, cli.output)
+                    && Objects.equals(discoveryInterval, cli.discoveryInterval);
+        }
+
+        @Override
+        public int hashCode() {
+            int result = Objects.hash(output, discoveryInterval);
+            result = 31 * result;
+            return result;
+        }
+    }
+}
